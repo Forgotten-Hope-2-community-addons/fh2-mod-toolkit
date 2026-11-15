@@ -16,7 +16,8 @@ The **BF2 Mod Toolkit** is a modern, cross-platform Python desktop application b
 * **Image Processing**: `Pillow` (PIL) for image manipulations, scaling, cropping, and saving into standard PNG or DDS formats.
 * **Array Processing**: `NumPy` for raw binary heightmap data manipulation (`.raw`) and efficient per-tile vertical pixel-flipping (`arr[::-1]`).
 * **Configuration**: `PyYAML` for persisting user preferences (`settings.yml`).
-* **Concurrency**: `QThread` combined with `QProgressDialog` to prevent UI freezing during heavy file I/O operations.
+* **Concurrency**: `QThread` combined with `QProgressDialog` to prevent UI freezing during heavy file I/O operations. Inside that worker, the 64 colormap/detailmap patches are processed by a `ThreadPoolExecutor` (`stitch_patches` / `unstitch_patches`), and both detailmap layers run concurrently. Pillow releases the GIL while encoding/decoding DDS, so threads scale; workers must never touch the shared canvas (pasting stays on the calling thread).
+* **Uncompressed DDS reads**: Pillow decodes bitmask DDS formats (A8R8G8B8 detailmaps and lowdetailmaps) in pure Python, which is ~30x slower. Always read DDS patches through `read_dds_rgba()`, which decodes that format with NumPy and falls back to Pillow for anything else.
 
 ---
 

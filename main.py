@@ -4,6 +4,8 @@ import subprocess
 import platform
 import yaml
 import logging
+import struct
+from concurrent.futures import ThreadPoolExecutor
 import numpy as np
 from PIL import Image
 from PyQt6.QtCore import Qt, QThread, QTimer, pyqtSignal, QSize
@@ -40,6 +42,92 @@ logging.basicConfig(
 
 # Standard Forgotten Hope 2 install location, only offered as a suggestion on first run
 FH2_DEFAULT_MOD_FOLDER = "C:/Program Files (x86)/Forgotten Hope 2/mods/fh2"
+
+# Colormaps and detailmaps are split into an 8x8 grid of 512x512 patches
+PATCH_SIZE = 512
+PATCH_GRID = 8
+
+# Pillow releases the GIL while encoding/decoding DDS, so threads run patches truly in parallel
+TEXTURE_WORKERS = max(1, min(8, os.cpu_count() or 1))
+
+# Fast compression for the 4096x4096 canvases: ~35% faster saves for ~60% larger files
+PNG_COMPRESS_LEVEL = 1
+
+# Pixel format of uncompressed editor patches (A8R8G8B8), see docs/formats.md
+_DDPF_RGB = 0x40
+_A8R8G8B8_MASKS = (0x00FF0000, 0x0000FF00, 0x000000FF, 0xFF000000)
+
+
+def read_dds_rgba(path):
+  """Read a DDS file as an RGBA image.
+
+  Uncompressed A8R8G8B8 files are decoded with NumPy, because Pillow decodes
+  bitmask formats in pure Python (~0.25 s per 512x512 patch). Any other
+  format falls back to Pillow.
+  """
+  with open(path, "rb") as f:
+    data = f.read()
+  if len(data) >= 128 and data[:4] == b"DDS ":
+    height, width = struct.unpack_from("<II", data, 12)
+    pf_flags, fourcc, bitcount = struct.unpack_from("<I4sI", data, 80)
+    masks = struct.unpack_from("<4I", data, 92)
+    size = width * height * 4
+    if (pf_flags & _DDPF_RGB and fourcc != b"DX10" and bitcount == 32
+        and masks == _A8R8G8B8_MASKS and len(data) >= 128 + size):
+      bgra = np.frombuffer(data, dtype=np.uint8, count=size, offset=128).reshape(height, width, 4)
+      return Image.fromarray(np.ascontiguousarray(bgra[..., [2, 1, 0, 3]]), mode="RGBA")
+  with Image.open(path) as img:
+    return img.convert("RGBA")
+
+
+def stitch_patches(patch_dir, name_fmt, auto_flip):
+  """Assemble the 8x8 DDS patches named by name_fmt into one canvas (missing patches stay blank)."""
+  full_size = PATCH_SIZE * PATCH_GRID
+  master_img = Image.new("RGBA", (full_size, full_size))
+
+  def load(col, row):
+    patch_path = os.path.join(patch_dir, name_fmt.format(col=col, row=row))
+    if not os.path.exists(patch_path):
+      return None
+    # DDS stores rows top-to-bottom, patches follow the bottom-left (OpenGL) UV origin
+    return read_dds_rgba(patch_path).transpose(Image.Transpose.FLIP_TOP_BOTTOM)
+
+  cells = [(col, row) for col in range(PATCH_GRID) for row in range(PATCH_GRID)]
+  with ThreadPoolExecutor(TEXTURE_WORKERS) as pool:
+    patches = pool.map(lambda cell: load(*cell), cells)
+    # Pasting stays on this thread, workers never touch the shared canvas
+    for (col, row), p_img in zip(cells, patches):
+      if p_img is not None:
+        dst_row = PATCH_GRID - 1 - row
+        master_img.paste(p_img, (col * PATCH_SIZE, dst_row * PATCH_SIZE))
+
+  if auto_flip:
+    master_img = master_img.transpose(Image.Transpose.FLIP_TOP_BOTTOM)
+  return master_img
+
+
+def unstitch_patches(img, patch_dir, name_fmt, auto_flip, **save_kwargs):
+  """Split a canvas into the 8x8 DDS patches named by name_fmt (inverse of stitch_patches)."""
+  if auto_flip:
+    img = img.transpose(Image.Transpose.FLIP_TOP_BOTTOM)
+
+  def save(col, row):
+    dst_row = PATCH_GRID - 1 - row
+    box = (col * PATCH_SIZE, dst_row * PATCH_SIZE, (col + 1) * PATCH_SIZE, (dst_row + 1) * PATCH_SIZE)
+    patch_img = img.crop(box).transpose(Image.Transpose.FLIP_TOP_BOTTOM)
+    patch_img.save(os.path.join(patch_dir, name_fmt.format(col=col, row=row)), format="DDS", **save_kwargs)
+
+  cells = [(col, row) for col in range(PATCH_GRID) for row in range(PATCH_GRID)]
+  with ThreadPoolExecutor(TEXTURE_WORKERS) as pool:
+    # list() surfaces the first worker exception, if any
+    list(pool.map(lambda cell: save(*cell), cells))
+
+
+def run_in_parallel(funcs):
+  """Run independent callables concurrently and return their results in order."""
+  with ThreadPoolExecutor(len(funcs)) as pool:
+    futures = [pool.submit(f) for f in funcs]
+    return [f.result() for f in futures]
 
 
 def is_valid_mod_folder(path):
@@ -888,30 +976,9 @@ class BF2ModToolkitApp(QMainWindow):
     if not os.path.exists(colormaps_dir):
       raise Exception("Editor/Colormaps folder not found in level.")
 
-    patch_size = 512
-    full_size = patch_size * 8
-    master_img = Image.new("RGBA", (full_size, full_size))
-
-    for col in range(8):
-      for row in range(8):
-        patch_name = f"tx{col:02d}x{row:02d}.dds"
-        patch_path = os.path.join(colormaps_dir, patch_name)
-        if os.path.exists(patch_path):
-          p_img = Image.open(patch_path).convert("RGBA")
-          
-          arr = np.array(p_img)
-          arr = arr[::-1, :, :]
-          p_img = Image.fromarray(arr)
-
-          dst_row = 7 - row
-          master_img.paste(p_img, (col * patch_size, dst_row * patch_size))
-
     # Respect the auto_flip setting for the final canvas
-    if self.auto_flip:
-      master_img = master_img.transpose(Image.Transpose.FLIP_TOP_BOTTOM)
-
-    save_path = os.path.join(colormaps_dir, "colormap.png")
-    master_img.save(save_path)
+    master_img = stitch_patches(colormaps_dir, "tx{col:02d}x{row:02d}.dds", self.auto_flip)
+    master_img.save(os.path.join(colormaps_dir, "colormap.png"), compress_level=PNG_COMPRESS_LEVEL)
 
   def import_colormap(self):
     level_path = self.get_selected_level_path()
@@ -927,30 +994,8 @@ class BF2ModToolkitApp(QMainWindow):
     if img.size != (4096, 4096):
       raise Exception("colormap.png must be exactly 4096x4096 pixels.")
 
-    # Respect the auto_flip setting when reading back from the canvas
-    if self.auto_flip:
-      img = img.transpose(Image.Transpose.FLIP_TOP_BOTTOM)
-
-    patch_size = 512
-    for col in range(8):
-      for row in range(8):
-        dst_row = 7 - row
-        box = (
-            col * patch_size,
-            dst_row * patch_size,
-            (col + 1) * patch_size,
-            (dst_row + 1) * patch_size,
-        )
-        patch_img = img.crop(box)
-        
-        arr = np.array(patch_img)
-        arr = arr[::-1, :, :]
-        patch_img = Image.fromarray(arr)
-
-        patch_name = f"tx{col:02d}x{row:02d}.dds"
-        patch_path = os.path.join(colormaps_dir, patch_name)
-        # The editor expects colormap patches as DXT5 (BC3), requires Pillow >= 11.2.1
-        patch_img.save(patch_path, format="DDS", pixel_format="DXT5")
+    # The editor expects colormap patches as DXT5 (BC3), requires Pillow >= 11.2.1
+    unstitch_patches(img, colormaps_dir, "tx{col:02d}x{row:02d}.dds", self.auto_flip, pixel_format="DXT5")
 
   def export_detailmaps(self):
     level_path = self.get_selected_level_path()
@@ -961,30 +1006,12 @@ class BF2ModToolkitApp(QMainWindow):
     if not os.path.exists(detailmaps_dir):
       raise Exception("Editor/Detailmaps folder not found in level.")
 
-    patch_size = 512
-    full_size = patch_size * 8
+    def export_layer(layer):
+      master_img = stitch_patches(detailmaps_dir, f"tx{{col:02d}}x{{row:02d}}_{layer}.dds", self.auto_flip)
+      master_img.save(os.path.join(detailmaps_dir, f"detailmap_{layer}.png"), compress_level=PNG_COMPRESS_LEVEL)
 
-    for layer in [1, 2]:
-      master_img = Image.new("RGBA", (full_size, full_size))
-      for col in range(8):
-        for row in range(8):
-          patch_name = f"tx{col:02d}x{row:02d}_{layer}.dds"
-          patch_path = os.path.join(detailmaps_dir, patch_name)
-          if os.path.exists(patch_path):
-            p_img = Image.open(patch_path).convert("RGBA")
-            
-            arr = np.array(p_img)
-            arr = arr[::-1, :, :]
-            p_img = Image.fromarray(arr)
-
-            dst_row = 7 - row
-            master_img.paste(p_img, (col * patch_size, dst_row * patch_size))
-
-      if self.auto_flip:
-        master_img = master_img.transpose(Image.Transpose.FLIP_TOP_BOTTOM)
-
-      out_path = os.path.join(detailmaps_dir, f"detailmap_{layer}.png")
-      master_img.save(out_path)
+    # Both layers run concurrently so their PNG saves overlap
+    run_in_parallel([lambda layer=layer: export_layer(layer) for layer in (1, 2)])
 
   def import_detailmaps(self):
     level_path = self.get_selected_level_path()
@@ -995,43 +1022,22 @@ class BF2ModToolkitApp(QMainWindow):
     if not os.path.exists(detailmaps_dir):
       raise Exception("Editor/Detailmaps folder not found.")
 
-    patch_size = 512
-    count = 0
-
-    for layer in [1, 2]:
+    def import_layer(layer):
       png_path = os.path.join(detailmaps_dir, f"detailmap_{layer}.png")
       if not os.path.exists(png_path):
-        continue
+        return False
 
       img = Image.open(png_path).convert("RGBA")
       if img.size != (4096, 4096):
-        continue
+        return False
 
-      if self.auto_flip:
-        img = img.transpose(Image.Transpose.FLIP_TOP_BOTTOM)
+      # RGBA mode makes Pillow write uncompressed 32-bit A8R8G8B8, as the editor expects
+      unstitch_patches(img, detailmaps_dir, f"tx{{col:02d}}x{{row:02d}}_{layer}.dds", self.auto_flip)
+      return True
 
-      for col in range(8):
-        for row in range(8):
-          dst_row = 7 - row
-          box = (
-              col * patch_size,
-              dst_row * patch_size,
-              (col + 1) * patch_size,
-              (dst_row + 1) * patch_size,
-          )
-          patch_img = img.crop(box)
-          
-          arr = np.array(patch_img)
-          arr = arr[::-1, :, :]
-          patch_img = Image.fromarray(arr)
-
-          patch_name = f"tx{col:02d}x{row:02d}_{layer}.dds"
-          patch_path = os.path.join(detailmaps_dir, patch_name)
-          # RGBA mode makes Pillow write uncompressed 32-bit A8R8G8B8, as the editor expects
-          patch_img.save(patch_path, format="DDS")
-      count += 1
-
-    if count == 0:
+    # Both layers run concurrently so their PNG loads overlap
+    imported = run_in_parallel([lambda layer=layer: import_layer(layer) for layer in (1, 2)])
+    if not any(imported):
       raise Exception("No valid detailmap_1.png or detailmap_2.png found to import.")
 
   def export_lowdetailmaps(self):
@@ -1049,7 +1055,7 @@ class BF2ModToolkitApp(QMainWindow):
       patch_path = os.path.join(lowdetail_dir, patch_name)
       if os.path.exists(patch_path):
         try:
-          img = Image.open(patch_path).convert("RGBA")
+          img = read_dds_rgba(patch_path)
           if self.auto_flip:
             img = img.transpose(Image.Transpose.FLIP_TOP_BOTTOM)
           img.save(os.path.join(lowdetail_dir, f"tx_s{i}.png"))

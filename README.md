@@ -74,6 +74,7 @@ python -m unittest discover tests
 
 * Includes an optional auto-flip setting to handle vertical y-axis orientation inversions automatically during texture conversion.
 * Operates heavy texture processing tasks in background worker threads to keep the graphical user interface fully responsive with progress dialog tracking.
+* Processes the 64 colormap and detailmap patches in parallel, with a fast reader for uncompressed dds files (see [texture processing performance](docs/texture_performance.md)).
 
 ## User instructions
 
@@ -106,12 +107,11 @@ python -m unittest discover tests
 
 ## Future work
 
-1. **Parallel texture processing**. Exporting or importing DDS textures takes some time, and the 64 patches of a colormap or detailmap are processed sequentially. Distributing the patches across a thread pool (8 or 12 workers) inside the background worker would speed these operations up considerably.
-2. **App icon** (https://forum.qt.io/topic/162658/changing-the-taskbar-icon)
-3. **Export destination toggle** (export as editor files or as game ready files). A textures re-save in the bf2editor is currently necessary to convert the editor files into game-ready files, after each import.
-4. **DDS formats not covered by Pillow**. Pillow (>= 11.2.1) can save DXT1, DXT3, DXT5, BC2, BC3 and BC5 compressed DDS files, which covers every editor file format we currently write. However, it cannot generate mipmap chains (needed for game-ready colormaps and lowdetailmaps, and for the surrounding terrain `tx_s*.dds` colormaps), does not support BC7, and offers no control over compression quality. If those become necessary, the alternatives are:
+1. **App icon** (https://forum.qt.io/topic/162658/changing-the-taskbar-icon)
+2. **Export destination toggle** (export as editor files or as game ready files). A textures re-save in the bf2editor is currently necessary to convert the editor files into game-ready files, after each import.
+3. **DDS formats not covered by Pillow**. Pillow (>= 11.2.1) can save DXT1, DXT3, DXT5, BC2, BC3 and BC5 compressed DDS files, which covers every editor file format we currently write. However, it cannot generate mipmap chains (needed for game-ready colormaps and lowdetailmaps, and for the surrounding terrain `tx_s*.dds` colormaps), does not support BC7, and offers no control over compression quality. If those become necessary, the alternatives are:
    - [quicktex](https://pypi.org/project/quicktex/): pip-installable BC1-BC5 encoder based on RGBCX, one of the highest quality S3TC encoders (last updated mid-2023).
    - [texfury](https://pypi.org/project/texfury/): pip-installable BC1-BC7 encoder with a simple Pillow-friendly API (`Texture.from_pil(img, format=BCFormat.BC3).save_dds(...)`).
    - External CLI tools invoked via subprocess: `nvtt_export.exe` (NVIDIA Texture Tools Exporter) or Microsoft's `texconv`. Both handle every format plus mipmap generation, but reintroduce a dependency on external software.
-5. **Preserve sizing**. Safe-keep window position, size and panels' sizes to preserve them between sessions.
-6. **Executable packaging** ([pyinstaller](https://github.com/Forgotten-Hope-2-community-addons/fh2-mod-toolkit/tree/main)) for Windows, Linux and MacOS. The current distribution is a Python script that requires a Python interpreter and dependencies to be installed on the host system. Packaging the toolkit as a standalone executable would simplify installation and usage for end-users.
+4. **Preserve sizing**. Safe-keep window position, size and panels' sizes to preserve them between sessions.
+5. **Executable packaging** ([pyinstaller](https://github.com/Forgotten-Hope-2-community-addons/fh2-mod-toolkit/tree/main)) for Windows, Linux and MacOS. The current distribution is a Python script that requires a Python interpreter and dependencies to be installed on the host system. Packaging the toolkit as a standalone executable would simplify installation and usage for end-users.
