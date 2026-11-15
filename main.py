@@ -6,7 +6,7 @@ import yaml
 import logging
 import numpy as np
 from PIL import Image
-from PyQt6.QtCore import Qt, QThread, pyqtSignal, QSize
+from PyQt6.QtCore import Qt, QThread, QTimer, pyqtSignal, QSize
 from PyQt6.QtGui import QIcon, QPixmap
 from PyQt6.QtWidgets import (
     QApplication,
@@ -37,6 +37,14 @@ logging.basicConfig(
     format="%(asctime)s [%(levelname)s] %(message)s",
     handlers=[logging.StreamHandler(sys.stdout)]
 )
+
+# Standard Forgotten Hope 2 install location, only offered as a suggestion on first run
+FH2_DEFAULT_MOD_FOLDER = "C:/Program Files (x86)/Forgotten Hope 2/mods/fh2"
+
+
+def is_valid_mod_folder(path):
+  """A mod folder is valid when it contains a 'levels' directory."""
+  return bool(path) and os.path.isdir(os.path.join(path, "levels"))
 
 
 class ResizablePreviewLabel(QLabel):
@@ -141,10 +149,7 @@ class BF2ModToolkitApp(QMainWindow):
     )
     self.settings = self.load_settings()
 
-    self.mod_path = self.settings.get(
-        "default_mod_folder",
-        "C:/Program Files (x86)/Forgotten Hope 2/mods/fh2",
-    )
+    self.mod_path = self.settings.get("default_mod_folder") or ""
     self.dark_mode = self.settings.get("dark_mode", True)
     self.auto_flip = self.settings.get("auto_flip", False)
     self.levels_path = ""
@@ -154,20 +159,19 @@ class BF2ModToolkitApp(QMainWindow):
 
     self.init_ui()
 
-    if self.mod_path and os.path.exists(
-        os.path.join(self.mod_path, "levels")
-    ):
+    if is_valid_mod_folder(self.mod_path):
       self.path_input.setText(self.mod_path)
       self.levels_path = os.path.join(self.mod_path, "levels")
       self.load_levels()
+    else:
+      # Defer the prompt until the event loop runs, so it shows over the main window
+      QTimer.singleShot(0, self.prompt_for_mod_folder)
 
   def load_settings(self):
     default_settings = {
         "dark_mode": True,
         "auto_flip": True,
-        "default_mod_folder": (
-            "C:/Program Files (x86)/Forgotten Hope 2/mods/fh2"
-        ),
+        "default_mod_folder": "",
     }
     if os.path.exists(self.settings_file):
       try:
@@ -531,26 +535,77 @@ class BF2ModToolkitApp(QMainWindow):
           "background-color: #2b2b2b; border-radius: 5px;"
       )
 
+  def prompt_for_mod_folder(self):
+    """Ask for the mod folder when none is configured or the saved one is gone."""
+    missing_path = self.mod_path
+    detected_path = (
+        FH2_DEFAULT_MOD_FOLDER
+        if is_valid_mod_folder(FH2_DEFAULT_MOD_FOLDER)
+        else None
+    )
+
+    while not is_valid_mod_folder(self.mod_path):
+      box = QMessageBox(self)
+      box.setIcon(QMessageBox.Icon.Information)
+      box.setWindowTitle("Mod folder setup")
+      if missing_path:
+        box.setText("The saved mod folder could not be found.")
+        details = f"{missing_path}\n\nPlease select your mod folder again."
+      else:
+        box.setText("Welcome to the BF2 Mod Toolkit.")
+        details = (
+            "Please select your mod folder"
+            " (the one containing the 'levels' directory)."
+        )
+      if detected_path:
+        details += (
+            "\n\nA Forgotten Hope 2 installation was found at:"
+            f"\n{detected_path}"
+        )
+      box.setInformativeText(details)
+
+      detected_btn = None
+      if detected_path:
+        detected_btn = box.addButton(
+            "Use detected folder", QMessageBox.ButtonRole.AcceptRole
+        )
+      browse_btn = box.addButton("Browse...", QMessageBox.ButtonRole.ActionRole)
+      later_btn = box.addButton("Later", QMessageBox.ButtonRole.RejectRole)
+      box.setDefaultButton(detected_btn or browse_btn)
+      box.setEscapeButton(later_btn)
+      box.exec()
+
+      clicked = box.clickedButton()
+      if clicked == later_btn:
+        logging.info("Mod folder setup postponed by the user.")
+        return
+      if clicked == detected_btn:
+        self.set_mod_folder(detected_path)
+      else:
+        self.select_mod_folder()
+
   def select_mod_folder(self):
     dir_path = QFileDialog.getExistingDirectory(
         self, "Select Battlefield 2 Mod Directory", self.mod_path
     )
     if dir_path:
-      levels_dir = os.path.join(dir_path, "levels")
-      if not os.path.exists(levels_dir):
+      if not is_valid_mod_folder(dir_path):
         QMessageBox.warning(
             self,
             "Invalid Folder",
             "The selected folder does not contain a 'levels' directory.",
         )
         return
+      self.set_mod_folder(dir_path)
 
-      self.mod_path = dir_path
-      self.levels_path = levels_dir
-      self.path_input.setText(dir_path)
-      self.settings["default_mod_folder"] = dir_path
-      self.save_settings()
-      self.load_levels()
+  def set_mod_folder(self, dir_path):
+    """Make dir_path the active mod folder, persist it and list its levels."""
+    self.mod_path = dir_path
+    self.levels_path = os.path.join(dir_path, "levels")
+    self.path_input.setText(dir_path)
+    self.settings["default_mod_folder"] = dir_path
+    self.save_settings()
+    self.load_levels()
 
   def load_levels(self):
     self.levels_table.setRowCount(0)

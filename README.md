@@ -80,7 +80,7 @@ python -m unittest discover tests
 ### Getting started
 
 1. Launch the application by executing `python main.py` in your terminal.
-2. Upon first launch, configure your mod folder path with the browse mod folder button, or set a default path via the settings menu in the top bar.
+2. Upon first launch, you are prompted for your mod folder. If a Forgotten Hope 2 installation is found in its default location, you can use it with one click; otherwise browse to your mod folder. You can change it later with the browse mod folder button, or via the settings menu in the top bar (see [first boot mod folder prompt](docs/first_boot.md)).
 3. Select any map level from the left-hand panel to view its metadata, file breakdown, and texture assets.
 
 ### Managing export operations
@@ -114,5 +114,4 @@ python -m unittest discover tests
    - [texfury](https://pypi.org/project/texfury/): pip-installable BC1-BC7 encoder with a simple Pillow-friendly API (`Texture.from_pil(img, format=BCFormat.BC3).save_dds(...)`).
    - External CLI tools invoked via subprocess: `nvtt_export.exe` (NVIDIA Texture Tools Exporter) or Microsoft's `texconv`. Both handle every format plus mipmap generation, but reintroduce a dependency on external software.
 5. **Preserve sizing**. Safe-keep window position, size and panels' sizes to preserve them between sessions.
-6. **Executable packaging** (pyinstaller) for Windows, Linux and MacOS. The current distribution is a Python script that requires a Python interpreter and dependencies to be installed on the host system. Packaging the toolkit as a standalone executable would simplify installation and usage for end-users.
-7. **First-run configuration prompt**. Ask for the mod folder path on first launch instead of silently falling back to the default Forgotten Hope 2 installation path.
+6. **Executable packaging** ([pyinstaller](https://github.com/Forgotten-Hope-2-community-addons/fh2-mod-toolkit/tree/main)) for Windows, Linux and MacOS. The current distribution is a Python script that requires a Python interpreter and dependencies to be installed on the host system. Packaging the toolkit as a standalone executable would simplify installation and usage for end-users.
