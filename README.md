@@ -1,3 +1,5 @@
+<p align="center"> <img width="1000px" src="https://github.com/Forgotten-Hope-2-community-addons/.github/blob/cdf851d807b9bdd3c382b0ab12a1b4added553b2/media/fh2_banner.jpg"/> </p>
+
 # Battlefield 2 Modern Mod Toolkit
 
 The Battlefield 2 modern mod toolkit is a cross-platform python application designed to supersede the legacy win32 **BF2 Mod Toolkit**. It streamlines Battlefield 2 and Forgotten Hope 2 modification development by handling level organization, texture management, and heightmap processing.
